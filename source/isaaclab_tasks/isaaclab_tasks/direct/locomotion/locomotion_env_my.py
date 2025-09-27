@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -44,6 +44,22 @@ class LocomotionEnv(DirectRLEnv):
         self.inv_start_rot = quat_conjugate(self.start_rotation).repeat((self.num_envs, 1))
         self.basis_vec0 = self.heading_vec.clone()
         self.basis_vec1 = self.up_vec.clone()
+        
+        # Initialize reward components for logging
+        self.reward_components = {}
+        
+        # Initialize accumulated reward components for iteration averaging
+        self.accumulated_reward_components = {
+            "progress_reward": torch.zeros(self.num_envs, device=self.sim.device),
+            "alive_reward": torch.zeros(self.num_envs, device=self.sim.device),
+            "up_reward": torch.zeros(self.num_envs, device=self.sim.device),
+            "heading_reward": torch.zeros(self.num_envs, device=self.sim.device),
+            "actions_penalty": torch.zeros(self.num_envs, device=self.sim.device),
+            "energy_penalty": torch.zeros(self.num_envs, device=self.sim.device),
+            "dof_at_limit_cost": torch.zeros(self.num_envs, device=self.sim.device),
+            "death_penalty": torch.zeros(self.num_envs, device=self.sim.device),
+        }
+        self.step_count = torch.zeros(self.num_envs, device=self.sim.device)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -53,6 +69,9 @@ class LocomotionEnv(DirectRLEnv):
         self.terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
+        # we need to explicitly filter collisions for CPU simulation
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
@@ -123,7 +142,10 @@ class LocomotionEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
+        # Compute rewards with components for logging
+        (total_reward, progress_reward, alive_reward, up_reward, 
+         heading_reward, actions_penalty, energy_penalty, 
+         dof_at_limit_cost, death_penalty) = compute_rewards_with_components(
             self.actions,
             self.reset_terminated,
             self.cfg.up_weight,
@@ -141,6 +163,32 @@ class LocomotionEnv(DirectRLEnv):
             self.cfg.alive_reward_scale,
             self.motor_effort_ratio,
         )
+        
+        # Store reward components for logging
+        self.reward_components = {
+            "progress_reward": progress_reward,
+            "alive_reward": alive_reward,
+            "up_reward": up_reward,
+            "heading_reward": heading_reward,
+            "actions_penalty": actions_penalty,
+            "energy_penalty": energy_penalty,
+            "dof_at_limit_cost": dof_at_limit_cost,
+            "death_penalty": death_penalty,
+        }
+        
+        # Accumulate reward components for iteration averaging
+        self.accumulated_reward_components["progress_reward"] += progress_reward
+        self.accumulated_reward_components["alive_reward"] += alive_reward
+        self.accumulated_reward_components["up_reward"] += up_reward
+        self.accumulated_reward_components["heading_reward"] += heading_reward
+        self.accumulated_reward_components["actions_penalty"] += actions_penalty
+        self.accumulated_reward_components["energy_penalty"] += energy_penalty
+        self.accumulated_reward_components["dof_at_limit_cost"] += dof_at_limit_cost
+        self.accumulated_reward_components["death_penalty"] += death_penalty
+        
+        # Increment step count for averaging
+        self.step_count += 1
+        
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -169,6 +217,20 @@ class LocomotionEnv(DirectRLEnv):
         self.potentials[env_ids] = -torch.norm(to_target, p=2, dim=-1) / self.cfg.sim.dt
 
         self._compute_intermediate_values()
+        
+        # Reset accumulated reward components for reset environments
+        for key in self.accumulated_reward_components:
+            self.accumulated_reward_components[key][env_ids] = 0.0
+        self.step_count[env_ids] = 0
+
+    def get_averaged_reward_components(self) -> dict[str, torch.Tensor]:
+        """Calculate averaged reward components over the current iteration."""
+        averaged_components = {}
+        for key, accumulated_values in self.accumulated_reward_components.items():
+            # Avoid division by zero
+            step_count_safe = torch.where(self.step_count > 0, self.step_count.float(), torch.ones_like(self.step_count).float())
+            averaged_components[key] = accumulated_values / step_count_safe
+        return averaged_components
 
 
 @torch.jit.script
@@ -223,6 +285,77 @@ def compute_rewards(
     # adjust reward for fallen agents
     total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)
     return total_reward
+
+
+@torch.jit.script
+def compute_rewards_with_components(
+    actions: torch.Tensor,
+    reset_terminated: torch.Tensor,
+    up_weight: float,
+    heading_weight: float,
+    heading_proj: torch.Tensor,
+    up_proj: torch.Tensor,
+    dof_vel: torch.Tensor,
+    dof_pos_scaled: torch.Tensor,
+    potentials: torch.Tensor,
+    prev_potentials: torch.Tensor,
+    actions_cost_scale: float,
+    energy_cost_scale: float,
+    dof_vel_scale: float,
+    death_cost: float,
+    alive_reward_scale: float,
+    motor_effort_ratio: torch.Tensor,
+):
+    """Compute rewards with individual components for logging."""
+    heading_weight_tensor = torch.ones_like(heading_proj) * heading_weight
+    heading_reward = torch.where(heading_proj > 0.8, heading_weight_tensor, heading_weight * heading_proj / 0.8)
+
+    # aligning up axis of robot and environment
+    up_reward = torch.zeros_like(heading_reward)
+    up_reward = torch.where(up_proj > 0.93, up_reward + up_weight, up_reward)
+
+    # energy penalty for movement
+    actions_cost = torch.sum(actions**2, dim=-1)
+    electricity_cost = torch.sum(
+        torch.abs(actions * dof_vel * dof_vel_scale) * motor_effort_ratio.unsqueeze(0),
+        dim=-1,
+    )
+
+    # dof at limit cost
+    dof_at_limit_cost = torch.sum(dof_pos_scaled > 0.98, dim=-1)
+
+    # reward for duration of staying alive
+    alive_reward = torch.ones_like(potentials) * alive_reward_scale
+    progress_reward = potentials - prev_potentials
+
+    # Compute individual components (matching original implementation)
+    actions_penalty = actions_cost_scale * actions_cost
+    energy_penalty = energy_cost_scale * electricity_cost
+
+    total_reward = (
+        progress_reward
+        + alive_reward
+        + up_reward
+        + heading_reward
+        - actions_penalty
+        - energy_penalty
+        - dof_at_limit_cost
+    )
+    # adjust reward for fallen agents (matching original implementation)
+    total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)
+    # Calculate death_penalty for logging (difference between adjusted and unadjusted reward)
+    unadjusted_reward = (
+        progress_reward
+        + alive_reward
+        + up_reward
+        + heading_reward
+        - actions_penalty
+        - energy_penalty
+        - dof_at_limit_cost
+    )
+    death_penalty = total_reward - unadjusted_reward
+    
+    return total_reward, progress_reward, alive_reward, up_reward, heading_reward, actions_penalty, energy_penalty, dof_at_limit_cost, death_penalty
 
 
 @torch.jit.script

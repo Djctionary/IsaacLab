@@ -184,6 +184,15 @@ class RslRlVecEnvWrapper(VecEnv):
         if not self.unwrapped.cfg.is_finite_horizon:
             extras["time_outs"] = truncated
 
+        # Add reward components to extras for logging
+        if hasattr(self.unwrapped, 'reward_components') and self.unwrapped.reward_components:
+            extras["reward_components"] = self.unwrapped.reward_components
+        
+        # Add accumulated reward components for iteration averaging
+        if hasattr(self.unwrapped, 'accumulated_reward_components'):
+            extras["accumulated_reward_components"] = self.unwrapped.accumulated_reward_components
+            extras["step_count"] = self.unwrapped.step_count
+
         # return the step information
         return obs, rew, dones, extras
 
