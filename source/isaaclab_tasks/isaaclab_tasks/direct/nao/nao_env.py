@@ -431,7 +431,7 @@ def compute_rewards_with_components(
 
     # reward for duration of staying alive
     alive_reward = torch.ones_like(potentials) * alive_reward_scale
-    progress_reward = potentials - prev_potentials
+    progress_reward = (potentials - prev_potentials) * heading_reward
 
     # Compute individual components (matching original implementation)
     actions_penalty = actions_cost_scale * actions_cost
