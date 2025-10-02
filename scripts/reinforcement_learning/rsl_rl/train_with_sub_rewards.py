@@ -9,8 +9,6 @@
 
 import argparse
 import sys
-import statistics
-from collections import defaultdict
 
 from isaaclab.app import AppLauncher
 

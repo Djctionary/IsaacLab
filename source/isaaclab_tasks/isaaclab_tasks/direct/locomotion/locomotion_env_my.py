@@ -223,15 +223,6 @@ class LocomotionEnv(DirectRLEnv):
             self.accumulated_reward_components[key][env_ids] = 0.0
         self.step_count[env_ids] = 0
 
-    def get_averaged_reward_components(self) -> dict[str, torch.Tensor]:
-        """Calculate averaged reward components over the current iteration."""
-        averaged_components = {}
-        for key, accumulated_values in self.accumulated_reward_components.items():
-            # Avoid division by zero
-            step_count_safe = torch.where(self.step_count > 0, self.step_count.float(), torch.ones_like(self.step_count).float())
-            averaged_components[key] = accumulated_values / step_count_safe
-        return averaged_components
-
 
 @torch.jit.script
 def compute_rewards(
