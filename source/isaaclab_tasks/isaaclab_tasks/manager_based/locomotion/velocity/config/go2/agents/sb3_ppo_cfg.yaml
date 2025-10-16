@@ -1,0 +1,39 @@
+seed: 42
+
+# Total training timesteps for SB3 learn()
+n_timesteps: !!float 1e7
+
+# Algorithm policy and hyper-parameters (A2C-compatible)
+policy: 'MlpPolicy'
+n_steps: 512            # rollout per env before update
+gamma: 0.99
+gae_lambda: 0.95
+ent_coef: 0.0
+vf_coef: 0.5
+max_grad_norm: 0.5
+use_sde: true
+sde_sample_freq: 4
+learning_rate: !!float 3e-4
+
+# Optional A2C-specific
+normalize_advantage: false
+use_rms_prop: true
+rms_prop_eps: 1.0e-5
+
+# Device selection (can be overridden by CLI device)
+device: "cuda:0"
+
+# Policy network architecture
+policy_kwargs: "dict(
+  log_std_init=-1,
+  ortho_init=False,
+  activation_fn=nn.ReLU,
+  net_arch=dict(pi=[256, 256], vf=[256, 256])
+)"
+
+# Optional normalization flags parsed by isaaclab_rl.sb3.process_sb3_cfg
+normalize_input: true
+normalize_value: false
+clip_obs: 100.0
+
+
