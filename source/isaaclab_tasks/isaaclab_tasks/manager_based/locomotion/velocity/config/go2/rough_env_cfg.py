@@ -61,6 +61,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
 
         self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-2.0, 2.0)
 
 @configclass
 class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
