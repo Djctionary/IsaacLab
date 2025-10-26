@@ -317,6 +317,92 @@ def imu_lin_acc(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg
     return asset.data.lin_acc_b
 
 
+"""
+Phase observations.
+"""
+
+
+def gait_phase(env: ManagerBasedEnv, freq: float = 1.0) -> torch.Tensor:
+    """Gait phase observation with sine and cosine components.
+    
+    This function computes the gait phase based on the environment's internal phase
+    and frequency. The phase is automatically updated each time this function is called.
+    The phase is also automatically reset when environments are reset.
+    
+    Args:
+        env: The environment.
+        freq: The frequency of the gait phase (Hz). Defaults to 1.0.
+        
+    Returns:
+        The gait phase observation [sin(2πφ), cos(2πφ)]. Shape is (num_envs, 2).
+    """
+    # Initialize phase if not exists
+    if not hasattr(env, '_gait_phase'):
+        setattr(env, '_gait_phase', torch.zeros(env.num_envs, device=env.device))
+        setattr(env, '_gait_phase_step_count', torch.zeros(env.num_envs, dtype=torch.long, device=env.device))
+    
+    # Get current phase and step count
+    current_phase = getattr(env, '_gait_phase')
+    phase_step_count = getattr(env, '_gait_phase_step_count')
+    
+    # Check for environment resets (episode_length_buf reset to 0)
+    # Note: episode_length_buf is available in ManagerBasedRLEnv
+    if hasattr(env, 'episode_length_buf') and hasattr(env, 'reset_buf'):
+        # Reset phase when episode just started (episode_length_buf == 0 and not in first step)
+        reset_mask = (env.episode_length_buf == 0) & (phase_step_count > 0)  # type: ignore
+        current_phase[reset_mask] = 0.0
+        phase_step_count[reset_mask] = 0
+    
+    # Compute sine and cosine of phase
+    phase_2pi = 2 * torch.pi * current_phase
+    sin_phase = torch.sin(phase_2pi).unsqueeze(-1)
+    cos_phase = torch.cos(phase_2pi).unsqueeze(-1)
+    
+    # Update phase for next step: φ = (φ + freq * dt) mod 1
+    dt = env.step_dt
+    setattr(env, '_gait_phase', (current_phase + freq * dt) % 1.0)
+    phase_step_count += 1
+    
+    # Concatenate sine and cosine components
+    return torch.cat([sin_phase, cos_phase], dim=-1)
+
+
+def update_gait_phase(env: ManagerBasedEnv, freq: float = 1.0) -> None:
+    """Update the gait phase for the next step.
+    
+    This function should be called at the end of each step to update the phase
+    for the next step. The phase is incremented by freq * dt and wrapped to [0, 1).
+    
+    Args:
+        env: The environment.
+        freq: The frequency of the gait phase (Hz). Defaults to 1.0.
+    """
+    if not hasattr(env, '_gait_phase'):
+        setattr(env, '_gait_phase', torch.zeros(env.num_envs, device=env.device))
+    
+    # Update phase: φ = (φ + freq * dt) mod 1
+    dt = env.step_dt
+    current_phase = getattr(env, '_gait_phase')
+    setattr(env, '_gait_phase', (current_phase + freq * dt) % 1.0)
+
+
+def reset_gait_phase(env: ManagerBasedEnv, env_ids: torch.Tensor = None) -> None:
+    """Reset the gait phase for specified environments.
+    
+    Args:
+        env: The environment.
+        env_ids: Environment IDs to reset. If None, resets all environments.
+    """
+    if not hasattr(env, '_gait_phase'):
+        setattr(env, '_gait_phase', torch.zeros(env.num_envs, device=env.device))
+    
+    current_phase = getattr(env, '_gait_phase')
+    if env_ids is None:
+        current_phase.zero_()
+    else:
+        current_phase[env_ids] = 0.0
+
+
 def image(
     env: ManagerBasedEnv,
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("tiled_camera"),

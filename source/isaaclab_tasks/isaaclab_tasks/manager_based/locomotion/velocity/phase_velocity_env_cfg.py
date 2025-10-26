@@ -137,6 +137,10 @@ class ObservationsCfg:
             noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-1.0, 1.0),
         )
+        gait_phase = ObsTerm(
+            func=mdp.gait_phase,
+            params={"freq": 1.0},
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -287,7 +291,7 @@ class CurriculumCfg:
 
 
 @configclass
-class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
+class LocomotionVelocityPhaseEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings

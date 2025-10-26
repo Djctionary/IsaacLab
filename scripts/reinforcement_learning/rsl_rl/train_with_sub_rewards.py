@@ -109,7 +109,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
-
+    save_interval = (
+        agent_cfg.save_interval if agent_cfg.save_interval is not None else 50
+    )
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -166,32 +168,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     
+    # Track best reward iteration
+    best_mean_reward = float('-inf')
+    best_iteration = 0
+    
     # Store original log method
     original_log_method = runner.log
     
-    
     def enhanced_log(locs, width=80, pad=35):
-        """Enhanced log method that includes sub-reward logging."""
+        """Enhanced log method that tracks best reward iteration."""
+        nonlocal best_mean_reward, best_iteration
+        
         # Call original log method first
         original_log_method(locs, width, pad)
         
-        # Log averaged sub-reward components if available
-        if hasattr(env.unwrapped, 'get_averaged_reward_components'):
-            try:
-                averaged_components = env.unwrapped.get_averaged_reward_components()
-                for key, value in averaged_components.items():
-                    if isinstance(value, torch.Tensor):
-                        # Convert tensor to scalar for logging
-                        if value.numel() == 1:
-                            scalar_value = value.item()
-                        else:
-                            # Convert to float before taking mean to handle Long tensors
-                            value_float = value.float()
-                            scalar_value = value_float.mean().item()
-                        if runner.writer is not None:
-                            runner.writer.add_scalar(f"Train/{key}", scalar_value, locs["it"])
-            except Exception as e:
-                print(f"Warning: Failed to log averaged reward components: {e}")
+        # Check if this is a save iteration and calculate current reward
+        current_iter = locs['it']
+        if current_iter % save_interval == 0 and 'rewbuffer' in locs:
+            rewards_list = list(locs['rewbuffer'])
+            if rewards_list:
+                mean_reward = sum(rewards_list) / len(rewards_list)
+                if mean_reward > best_mean_reward:
+                    best_mean_reward = mean_reward
+                    best_iteration = current_iter
+                print(f"[INFO] Iteration {current_iter}: Current reward: {mean_reward:.4f}, Best reward: {best_mean_reward:.4f} (iter {best_iteration})")
     
     # Replace the log method
     runner.log = enhanced_log
@@ -210,9 +210,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
-    # run training (using original runner.learn method)
-    print("[INFO] Starting training with sub-reward logging...")
+    # run training
+    print("[INFO] Starting training with best reward tracking...")
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    
+    # Print best reward information
+    print("\n" + "="*80)
+    print("[INFO] Training completed!")
+    if best_mean_reward > float('-inf'):
+        print(f"[INFO] Best mean reward achieved: {best_mean_reward:.4f} at iteration {best_iteration}")
+    else:
+        print("[INFO] No reward tracking completed")
+    print("="*80 + "\n")
 
     # close the simulator
     env.close()

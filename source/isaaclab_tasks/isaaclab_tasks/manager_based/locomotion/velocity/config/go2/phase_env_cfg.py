@@ -5,8 +5,9 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
-import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
+from isaaclab_tasks.manager_based.locomotion.velocity.phase_velocity_env_cfg import LocomotionVelocityPhaseEnvCfg
+from isaaclab.envs.mdp import observations as mdp_obs
+from isaaclab.managers import ObservationTermCfg
 
 ##
 # Pre-defined configs
@@ -15,7 +16,7 @@ from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG  # isort: skip
 
 
 @configclass
-class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+class UnitreeGo2PhaseEnvCfg(LocomotionVelocityPhaseEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
@@ -28,6 +29,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
         self.scene.terrain.max_init_terrain_level = 3
         self.curriculum.terrain_levels = None
+
         # reduce action scale
         self.actions.joint_pos.scale = 0.25
 
@@ -58,23 +60,24 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_exp.weight = 2.5
         self.rewards.track_ang_vel_z_exp.weight = 0.75
         self.rewards.dof_acc_l2.weight = -2.5e-7
-        # use clipped action rate reward to prevent training instability
-        # self.rewards.action_rate_l2.func = mdp.action_rate_l2_clipped
 
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (-2, 2)
+        self.commands.base_velocity.ranges.lin_vel_y = (-2, 2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2, 2)
 
-        # self.sim.physx.min_position_iteration_count = 8
-        # self.sim.physx.max_position_iteration_count = 255  
-        # self.sim.physx.min_velocity_iteration_count = 4  
-        # self.sim.physx.max_velocity_iteration_count = 255  
+        self.observations.policy.gait_phase = ObservationTermCfg(
+            func=mdp_obs.gait_phase,
+            params={"freq": 5.0},
+        )
+        
+        # Add phase frequency as a configurable parameter
+        self.gait_freq = 5.0  # Hz
 
 @configclass
-class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
+class UnitreeGo2PhaseEnvCfg_PLAY(UnitreeGo2PhaseEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
@@ -89,8 +92,10 @@ class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
             self.scene.terrain.terrain_generator.num_rows = 10
             self.scene.terrain.terrain_generator.num_cols = 10
             # self.scene.terrain.terrain_generator.curriculum = False
+
         # disable randomization for play
         self.observations.policy.enable_corruption = False
         # remove random pushing event
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+
