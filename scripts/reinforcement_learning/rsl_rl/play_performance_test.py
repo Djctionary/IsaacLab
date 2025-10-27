@@ -331,6 +331,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"  Avg Command Linear Velocity Norm: {(torch.sqrt(command_lin_vel_x_sum**2 + command_lin_vel_y_sum**2) / step_count).mean().item():.4f} m/s")
             print(f"  Avg Actual Angular Velocity: {(actual_ang_vel_z_sum / step_count).mean().item():.4f} rad/s")
             print(f"  Avg Command Angular Velocity: {(command_ang_vel_z_sum / step_count).mean().item():.4f} rad/s")
+            print(f"  Avg Linear Velocity Tracking Error: {lin_vel_error:.4f} m/s")
+            print(f"  Avg Angular Velocity Tracking Error: {ang_vel_error:.4f} rad/s")
 
     print(f"\n{'='*80}")
     print(f"Performance Test Completed!")
