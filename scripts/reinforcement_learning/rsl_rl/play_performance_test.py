@@ -32,6 +32,7 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--iterations", type=int, default=1, help="Number of iterations to run performance test.")
+parser.add_argument("--gait_freq", type=float, default=None, help="Gait frequency for phase-based locomotion (Hz).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -57,6 +58,7 @@ import time
 import torch
 import numpy as np
 import csv
+import json
 from datetime import datetime
 from typing import Any
 
@@ -94,6 +96,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    
+    # override gait frequency if specified
+    if args_cli.gait_freq is not None:
+        if hasattr(env_cfg, 'gait_freq'):
+            env_cfg.gait_freq = args_cli.gait_freq
+            print(f"[INFO] Overriding gait frequency to: {args_cli.gait_freq} Hz")
+        if hasattr(env_cfg.observations.policy, 'gait_phase'):
+            if hasattr(env_cfg.observations.policy.gait_phase, 'params'):
+                # params is a dictionary, so we access it with square brackets
+                env_cfg.observations.policy.gait_phase.params["freq"] = args_cli.gait_freq
+                print(f"[INFO] Overriding gait phase observation frequency to: {args_cli.gait_freq} Hz")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -150,6 +163,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     os.makedirs(results_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_csv_path = os.path.join(results_dir, f"performance_metrics_{timestamp}.csv")
+    results_json_path = os.path.join(results_dir, f"performance_summary_{timestamp}.json")
     
     # Get terrain information if available
     terrain = env.unwrapped.scene.terrain
@@ -167,6 +181,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"Number of Iterations: {iterations}")
     print(f"Steps per Iteration: {int(env.unwrapped.max_episode_length)}")
     print(f"Results will be saved to: {results_csv_path}")
+    print(f"Summary will be saved to: {results_json_path}")
     if has_terrain_info:
         print(f"Terrain tracking: ENABLED")
         print(f"  - Terrain levels range: [{terrain_levels.min()}, {terrain_levels.max()}]")
@@ -204,6 +219,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
+
+        # Initialize summary data structure
+        summary_data = {
+            "test_info": {
+                "task": args_cli.task,
+                "num_envs": num_envs,
+                "iterations": iterations,
+                "steps_per_iteration": int(env.unwrapped.max_episode_length),
+                "timestamp": timestamp,
+                "gait_freq": args_cli.gait_freq if args_cli.gait_freq is not None else "default"
+            },
+            "terrain_info": {
+                "enabled": has_terrain_info,
+                "levels_range": [float(terrain_levels.min()), float(terrain_levels.max())] if has_terrain_info else None,
+                "types_range": [float(terrain_types.min()), float(terrain_types.max())] if has_terrain_info else None
+            },
+            "iterations": []
+        }
 
         # Run performance test for multiple iterations
         for iteration in range(iterations):
@@ -323,20 +356,48 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 
                 writer.writerow(row_data)
             
+            # Calculate summary statistics for this iteration
+            fallen_envs = fell_down.sum().item()
+            fall_rate = fallen_envs / num_envs * 100
+            avg_actual_lin_vel_norm = (torch.sqrt(actual_lin_vel_x_sum**2 + actual_lin_vel_y_sum**2) / step_count).mean().item()
+            avg_command_lin_vel_norm = (torch.sqrt(command_lin_vel_x_sum**2 + command_lin_vel_y_sum**2) / step_count).mean().item()
+            avg_actual_ang_vel = (actual_ang_vel_z_sum / step_count).mean().item()
+            avg_command_ang_vel = (command_ang_vel_z_sum / step_count).mean().item()
+            
+            # Store iteration summary data
+            iteration_summary = {
+                "iteration": iteration + 1,
+                "fallen_environments": int(fallen_envs),
+                "total_environments": int(num_envs),
+                "fall_rate_percent": float(fall_rate),
+                "avg_actual_linear_velocity_norm": float(avg_actual_lin_vel_norm),
+                "avg_command_linear_velocity_norm": float(avg_command_lin_vel_norm),
+                "avg_actual_angular_velocity": float(avg_actual_ang_vel),
+                "avg_command_angular_velocity": float(avg_command_ang_vel),
+                "avg_linear_velocity_tracking_error": float(lin_vel_error),
+                "avg_angular_velocity_tracking_error": float(ang_vel_error)
+            }
+            summary_data["iterations"].append(iteration_summary)
+            
             # Print summary statistics for this iteration
             print(f"\nIteration {iteration + 1} Summary Statistics:")
-            print(f"  Fallen Environments: {fell_down.sum().item()}/{num_envs}")
-            print(f"  Fall Rate: {fell_down.sum().item() / num_envs * 100:.2f}%")
-            print(f"  Avg Actual Linear Velocity Norm: {(torch.sqrt(actual_lin_vel_x_sum**2 + actual_lin_vel_y_sum**2) / step_count).mean().item():.4f} m/s")
-            print(f"  Avg Command Linear Velocity Norm: {(torch.sqrt(command_lin_vel_x_sum**2 + command_lin_vel_y_sum**2) / step_count).mean().item():.4f} m/s")
-            print(f"  Avg Actual Angular Velocity: {(actual_ang_vel_z_sum / step_count).mean().item():.4f} rad/s")
-            print(f"  Avg Command Angular Velocity: {(command_ang_vel_z_sum / step_count).mean().item():.4f} rad/s")
+            print(f"  Fallen Environments: {fallen_envs}/{num_envs}")
+            print(f"  Fall Rate: {fall_rate:.2f}%")
+            print(f"  Avg Actual Linear Velocity Norm: {avg_actual_lin_vel_norm:.4f} m/s")
+            print(f"  Avg Command Linear Velocity Norm: {avg_command_lin_vel_norm:.4f} m/s")
+            print(f"  Avg Actual Angular Velocity: {avg_actual_ang_vel:.4f} rad/s")
+            print(f"  Avg Command Angular Velocity: {avg_command_ang_vel:.4f} rad/s")
             print(f"  Avg Linear Velocity Tracking Error: {lin_vel_error:.4f} m/s")
             print(f"  Avg Angular Velocity Tracking Error: {ang_vel_error:.4f} rad/s")
+
+    # Save summary data to JSON file
+    with open(results_json_path, 'w') as jsonfile:
+        json.dump(summary_data, jsonfile, indent=2)
 
     print(f"\n{'='*80}")
     print(f"Performance Test Completed!")
     print(f"Results saved to: {results_csv_path}")
+    print(f"Summary saved to: {results_json_path}")
     print(f"{'='*80}\n")
 
     # close the simulator
